@@ -7,6 +7,7 @@ const port = 3000;
 const fs = require("fs");
 const request = require("request");
 const axios = require("axios");
+const { verify } = require("./verify");
 
 const DOMAIN = process.env.DOMAIN;
 const CLIENT_ID = process.env.CLIENT_ID;
@@ -65,7 +66,6 @@ class Session {
     this.#storeSessions();
   }
 }
-
 const sessions = new Session();
 
 app.use((req, res, next) => {
@@ -120,15 +120,22 @@ const refreshToken = (refreshToken) => {
 app.get("/", async (req, res) => {
   const token = req.session.access_token;
   if (token) {
-    const tokenLifetime = req.session.expires_at - Math.floor(Date.now() / 1000);
+    try {
+      verify(token);
+    } catch (error) {
+      console.error(error);
+    }
+    const tokenLifetime =
+      req.session.expires_at - Math.floor(Date.now() / 1000);
     console.log("token expires at " + tokenLifetime);
     if (tokenLifetime <= 10) {
       console.log("started refreshing token");
       const response = await refreshToken(req.session.refresh_token);
       const parsed = JSON.parse(response);
       req.session.access_token = parsed.access_token;
-      req.session.expires_at = Math.floor(Date.now() / 1000) + parsed.expires_at;
-      console.log('new token:' + parsed.access_token);
+      req.session.expires_at =
+        Math.floor(Date.now() / 1000) + parsed.expires_at;
+      console.log("new token:" + parsed.access_token);
     }
 
     return res.json({
@@ -163,7 +170,6 @@ app.post("/api/login", (req, res) => {
   request(options, (error, response, body) => {
     if (error) {
       console.error(error);
-      obj.status(401).send();
     }
     const obj = JSON.parse(body);
     console.log(obj);
