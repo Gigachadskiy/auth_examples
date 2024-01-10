@@ -2,11 +2,12 @@ const uuid = require("uuid");
 const express = require("express");
 const onFinished = require("on-finished");
 const bodyParser = require("body-parser");
-const path = require("path");
 const port = 3000;
+const path = require("path");
 const fs = require("fs");
 const request = require("request");
 const axios = require("axios");
+const { redirectUri, getAccessTokensFromCode } = require("./auth0");
 
 const DOMAIN = process.env.DOMAIN;
 const CLIENT_ID = process.env.CLIENT_ID;
@@ -15,7 +16,15 @@ const AUDIENCE = process.env.AUDIENCE;
 const app = express();
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
-
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Methods", "GET,POST,DELETE");
+  res.header(
+    "Access-Control-Allow-Headers",
+    "Origin, X-Requested With, Content-Type, Accept"
+  );
+  next();
+});
 const SESSION_KEY = "Authorization";
 
 class Session {
@@ -65,7 +74,6 @@ class Session {
     this.#storeSessions();
   }
 }
-
 const sessions = new Session();
 
 app.use((req, res, next) => {
@@ -117,63 +125,56 @@ const refreshToken = (refreshToken) => {
   });
 };
 
-app.get("/", async (req, res) => {
-  const token = req.session.access_token;
-  if (token) {
-    const tokenLifetime = req.session.expires_at - Math.floor(Date.now() / 1000);
-    console.log("token expires at " + tokenLifetime);
-    if (tokenLifetime <= 10) {
-      console.log("started refreshing token");
-      const response = await refreshToken(req.session.refresh_token);
-      const parsed = JSON.parse(response);
-      req.session.access_token = parsed.access_token;
-      req.session.expires_at = Math.floor(Date.now() / 1000) + parsed.expires_at;
-      console.log('new token:' + parsed.access_token);
-    }
-
+app.get("/", (req, res) => {
+  if (req.session?.username) {
     return res.json({
       username: req.session.username,
       logout: "http://localhost:3000/logout",
     });
   }
+
   res.sendFile(path.join(__dirname + "/index.html"));
 });
 
 app.get("/logout", (req, res) => {
   sessions.destroy(req, res);
-  res.redirect("/");
+  res.clearCookie("refresh_token", {
+    httpOnly: true,
+    secure: false,
+    domain: "localhost",
+    path: "/",
+  });
+  res.clearCookie("access_token", {
+    httpOnly: true,
+    secure: false,
+    domain: "localhost",
+    path: "/",
+  });
+  res.status(204).send();
 });
 
-app.post("/api/login", (req, res) => {
-  const { login, password } = req.body;
-  const options = {
-    method: "POST",
-    url: `https://${DOMAIN}/oauth/token`,
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    form: {
-      client_id: CLIENT_ID,
-      client_secret: CLIENT_SECRET,
-      audience: AUDIENCE,
-      grant_type: "password",
-      username: login,
-      password: password,
-      scope: "offline_access",
-    },
-  };
-  request(options, (error, response, body) => {
-    if (error) {
-      console.error(error);
-      obj.status(401).send();
-    }
-    const obj = JSON.parse(body);
-    console.log(obj);
-    req.session.username = login;
-    req.session.login = login;
-    req.session.access_token = obj.access_token;
-    req.session.expires_at = Math.floor(Date.now() / 1000) + obj.expires_in;
-    req.session.refresh_token = obj.refresh_token;
-    res.json({ token: req.sessionId });
-  });
+app.post("/api/login", async (req, res) => {
+  const redirectUrl = redirectUri();
+  res.json({ redirectUrl });
+});
+
+app.get("/oidc-callback", async (req, res) => {
+  const tokens = await getAccessTokensFromCode(req.query.code);
+
+  if (tokens) {
+    res.cookie("refresh_token", tokens.refresh_token, {
+      httpOnly: true,
+      secure: false,
+    });
+    res.cookie("access_token", tokens.access_token, {
+      httpOnly: false,
+      secure: false,
+    });
+
+    res.redirect("/");
+  } else {
+    res.status(401).send();
+  }
 });
 
 const obtainToken = async () => {
